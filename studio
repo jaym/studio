@@ -1,0 +1,277 @@
+#!/bin/bash
+
+set -e
+
+function user_home {
+    echo "$HOME/.studio/"
+}
+function project_home {
+    pwd
+}
+
+function studio_home {
+    echo "$(project_home)/.studio"
+}
+
+function logerr {
+    (>&2 echo "$1")
+}
+
+function studio_name {
+    local path="$(studio_home)/name"
+    if [[ -f  $path ]]
+    then
+        cat $path
+    else
+        mkdir -p "$(studio_home)"
+        if [[ $? != 0 ]]
+        then
+            logerr "Could not create studio name"
+            exit 1
+        fi
+
+        name="studio-$(basename "$(project_home)")"
+
+        echo "$name" > $path
+        if [[ $? != 0 ]]
+        then
+            logerr "Could not create studio name"
+            exit 1
+        fi
+
+        echo $name
+    fi
+}
+
+function scope {
+    echo "$(studio_name).scope"
+}
+
+function created {
+    systemctl --user status "$(studio_name).scope"
+}
+
+function initialize {
+    local rootfs="$(studio_home)/rootfs"
+    tmux_socket_path="$rootfs/tmux"
+
+    create_rootfs
+    systemd-run --user --unit="$(scope)" --scope runc run -d --bundle "$(studio_home)" "$(studio_name)"
+}
+
+function create_rootfs {
+    local rootfs="$(studio_home)/rootfs"
+
+    mkdir -p "$rootfs"
+    mkdir -p "$rootfs/bin"
+    mkdir -p "$rootfs/sbin"
+    mkdir -p "$rootfs/usr/bin"
+    mkdir -p "$rootfs/usr/sbin"
+    mkdir -p "$rootfs/usr/local/bin"
+
+    create_config
+
+    curl -L "https://api.bintray.com/content/habitat/stable/linux/x86_64/hab-%24latest-x86_64-linux.tar.gz?bt_package=hab-x86_64-linux" | tar -C "$rootfs/usr/local/bin" --strip 1 -xvzf -
+
+    curl -o "$rootfs/bin/busybox" "https://busybox.net/downloads/binaries/1.28.1-defconfig-multiarch/busybox-x86_64"
+
+    chmod +x "$rootfs/bin/busybox"
+    ln -rs "$rootfs/bin/busybox" "$rootfs/bin/sh"
+    cp run_studio "$rootfs/usr/local/bin/run_studio"
+}
+
+function create_config {
+    local config_path="$(studio_home)/config.json"
+    cat << EOF > $config_path
+{
+	"ociVersion": "1.0.0",
+	"process": {
+		"user": {
+			"uid": 0,
+			"gid": 0
+		},
+		"args": [
+			"run_studio"
+		],
+		"env": [
+			"PATH=/hab/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "HAB_BINLINK_PATH=/hab/bin",
+      "HAB_ORIGIN=$(id -nu)",
+			"TERM=xterm"
+		],
+		"cwd": "/",
+		"capabilities": {
+			"bounding": [
+				"CAP_AUDIT_WRITE",
+				"CAP_KILL",
+				"CAP_NET_BIND_SERVICE"
+			],
+			"effective": [
+				"CAP_AUDIT_WRITE",
+				"CAP_KILL",
+				"CAP_NET_BIND_SERVICE"
+			],
+			"inheritable": [
+				"CAP_AUDIT_WRITE",
+				"CAP_KILL",
+				"CAP_NET_BIND_SERVICE"
+			],
+			"permitted": [
+				"CAP_AUDIT_WRITE",
+				"CAP_KILL",
+				"CAP_NET_BIND_SERVICE"
+			],
+			"ambient": [
+				"CAP_AUDIT_WRITE",
+				"CAP_KILL",
+				"CAP_NET_BIND_SERVICE"
+			]
+		},
+		"rlimits": [
+			{
+				"type": "RLIMIT_NOFILE",
+				"hard": 1024,
+				"soft": 1024
+			}
+		],
+		"noNewPrivileges": true
+	},
+	"root": {
+		"path": "rootfs",
+		"readonly": false
+	},
+	"hostname": "runc",
+  "hooks": {
+    "poststart": [
+      {
+        "path": "/bin/touch",
+        "args": ["touch", "bar"]
+      }
+    ]
+  },
+	"mounts": [
+		{
+			"destination": "/proc",
+			"type": "proc",
+			"source": "proc"
+		},
+		{
+			"destination": "/dev",
+			"type": "tmpfs",
+			"source": "tmpfs",
+			"options": [
+				"nosuid",
+				"strictatime",
+				"mode=755",
+				"size=65536k"
+			]
+		},
+		{
+			"destination": "/dev/pts",
+			"type": "devpts",
+			"source": "devpts",
+			"options": [
+				"nosuid",
+				"noexec",
+				"newinstance",
+				"ptmxmode=0666",
+				"mode=0620"
+			]
+		},
+		{
+			"destination": "/dev/shm",
+			"type": "tmpfs",
+			"source": "shm",
+			"options": [
+				"nosuid",
+				"noexec",
+				"nodev",
+				"mode=1777",
+				"size=65536k"
+			]
+		},
+		{
+			"destination": "/dev/mqueue",
+			"type": "mqueue",
+			"source": "mqueue",
+			"options": [
+				"nosuid",
+				"noexec",
+				"nodev"
+			]
+		},
+		{
+			"destination": "/sys",
+			"type": "none",
+			"source": "/sys",
+			"options": [
+				"rbind",
+				"nosuid",
+				"noexec",
+				"nodev",
+				"ro"
+			]
+		}
+	],
+	"linux": {
+		"uidMappings": [
+			{
+                "hostID": $(id -u),
+				"containerID": 0,
+				"size": 1
+			}
+		],
+		"gidMappings": [
+			{
+                "hostID": $(id -g),
+				"containerID": 0,
+				"size": 1
+			}
+		],
+		"namespaces": [
+			{
+				"type": "pid"
+			},
+			{
+				"type": "ipc"
+			},
+			{
+				"type": "uts"
+			},
+			{
+				"type": "mount"
+			},
+			{
+				"type": "user"
+			}
+		],
+		"maskedPaths": [
+			"/proc/kcore",
+			"/proc/latency_stats",
+			"/proc/timer_list",
+			"/proc/timer_stats",
+			"/proc/sched_debug",
+			"/sys/firmware",
+			"/proc/scsi"
+		],
+		"readonlyPaths": [
+			"/proc/asound",
+			"/proc/bus",
+			"/proc/fs",
+			"/proc/irq",
+			"/proc/sys",
+			"/proc/sysrq-trigger"
+		]
+	}
+}
+EOF
+}
+
+function stop_studio {
+    systemctl --user kill "$(scope)"
+}
+
+# created
+initialize
+# stop_studio
+# create_rootfs

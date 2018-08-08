@@ -1,0 +1,14 @@
+#!/bin/sh
+
+set -e
+
+hab pkg install --binlink --force core/hab
+hab pkg install core/busybox-static
+hab pkg exec core/busybox-static busybox --install
+hab pkg install core/tmux
+hab pkg exec core/tmux tmux -S /tmux new -d
+
+pid=`hab pkg exec core/tmux tmux -S /tmux display-message -p "#{pid}"`
+while kill -0 "$pid"; do
+    sleep 0.5
+done
